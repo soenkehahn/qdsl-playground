@@ -32,10 +32,13 @@ to_js (LamE [VarP a] body) =
   let ((returnExpression, typ), letClauses) = runWriter $ inner body
   in toFunction "f" a letClauses returnExpression typ
 
+indent :: [String] -> [String]
+indent = map ("  " ++) . concat . map lines
+
 toFunction :: String -> Name -> [String] -> String -> ExprType -> String
 toFunction name parameter letClauses returnExpression typ = unlines $
   ("function f(" ++ show parameter ++ ") {") :
-  map ("  " ++) (renderBody letClauses returnExpression typ) ++
+  indent (renderBody letClauses returnExpression typ) ++
   "}" :
   []
 
@@ -87,9 +90,9 @@ inner x = case x of
     let ((eE, eTyp), eLetClauses) = runWriter $ inner e
     return $ (, Statement) $ unlines $
       ("if (" ++ condE ++ ") {") :
-      map ("  " ++) (renderBody tLetClauses tE tTyp) ++
+      indent (renderBody tLetClauses tE tTyp) ++
       "} else {" :
-      map ("  " ++) (renderBody eLetClauses eE eTyp) ++
+      indent (renderBody eLetClauses eE eTyp) ++
       "}" :
       []
   x -> error $ ("inner: " ++ show x)
