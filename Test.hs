@@ -3,6 +3,7 @@
 {-# LANGUAGE TupleSections #-}
 
 import Language.Haskell.TH
+import Data.Maybe
 import Control.Monad.Writer
 import Development.Shake
 import Data.Generics.Uniplate.Data
@@ -14,12 +15,12 @@ main = do
   forM_ ([0 .. 10] ++ [-1, -2 .. -10]) $ \ i -> do
     term <- unType <$> runQ (power i)
     putStrLn ("i: " ++ show i)
-    putStrLn "=== unsimplified: ===="
+    putStrLn "=== unsimplified: ====="
     test $ to_js term
-    putStrLn "======================"
-    putStrLn "=== simplified: ==="
+    putStrLn "======================="
+    putStrLn "=== simplified: ======="
     test $ to_js $ simplify term
-    putStrLn "======================"
+    putStrLn "======================="
 
 test :: String -> IO ()
 test code = do
@@ -30,14 +31,14 @@ test code = do
 to_js :: Exp -> String
 to_js (LamE [VarP a] body) =
   let ((returnExpression, typ), letClauses) = runWriter $ inner body
-  in toFunction "f" a letClauses returnExpression typ
+  in toFunction (Just "f") a letClauses returnExpression typ
 
 indent :: [String] -> [String]
 indent = map ("  " ++) . concat . map lines
 
-toFunction :: String -> Name -> [String] -> String -> ExprType -> String
+toFunction :: Maybe String -> Name -> [String] -> String -> ExprType -> String
 toFunction name parameter letClauses returnExpression typ = unlines $
-  ("function f(" ++ show parameter ++ ") {") :
+  ("function " ++ fromMaybe "" name ++ "(" ++ show parameter ++ ") {") :
   indent (renderBody letClauses returnExpression typ) ++
   "}" :
   []
@@ -58,7 +59,7 @@ inner :: Exp -> Writer [String] (String, ExprType)
 inner x = case x of
   LamE [VarP a] body -> do
     let ((returnExpression, typ), letClauses) = runWriter $ inner body
-    return (toFunction "boo" a letClauses returnExpression typ, Expression)
+    return (toFunction Nothing a letClauses returnExpression typ, Expression)
   VarE v -> return (show v, Expression)
   LitE (IntegerL i) -> return (show i ++ ".0", Expression)
   InfixE (Just left) operator (Just right)
