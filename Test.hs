@@ -1,5 +1,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 
 import Language.Haskell.TH
 import Control.Monad.Writer
@@ -10,7 +11,7 @@ import Lib
 
 main :: IO ()
 main = do
-  forM_ (take 100 ([0 .. 10] ++ [-1, -2 .. -10])) $ \ i -> do
+  forM_ ([0 .. 10] ++ [-1, -2 .. -10]) $ \ i -> do
     term <- unType <$> runQ (power i)
     putStrLn ("i: " ++ show i)
     putStrLn "=== unsimplified: ===="
@@ -28,40 +29,69 @@ test code = do
 
 to_js :: Exp -> String
 to_js (LamE [VarP a] body) =
-  let (returnExpression, letClauses) = runWriter $ inner body
-  in unlines $
-    ("function f(" ++ show a ++ ") {") :
-    map ("  " ++) letClauses ++
-    ("  return " ++ returnExpression ++ ";") :
-    "}" :
-    []
+  let ((returnExpression, typ), letClauses) = runWriter $ inner body
+  in toFunction "f" a letClauses returnExpression typ
 
+toFunction :: String -> Name -> [String] -> String -> ExprType -> String
+toFunction name parameter letClauses returnExpression typ = unlines $
+  ("function f(" ++ show parameter ++ ") {") :
+  map ("  " ++) (renderBody letClauses returnExpression typ) ++
+  "}" :
+  []
 
-inner :: Exp -> Writer [String] String
+renderBody :: [String] -> String -> ExprType -> [String]
+renderBody letClauses returnExpression typ =
+  letClauses ++
+  returnStatement :
+  []
+  where
+    returnStatement = case typ of
+      Expression -> "return " ++ returnExpression ++ ";"
+      Statement -> returnExpression
+
+data ExprType = Statement | Expression
+
+inner :: Exp -> Writer [String] (String, ExprType)
 inner x = case x of
   LamE [VarP a] body -> do
-    let (returnExpression, letClauses) = runWriter $ inner body
-    return $ unlines $
-      ("function f(" ++ show a ++ ") {") :
-      map ("  " ++) letClauses ++
-      ("  return " ++ returnExpression ++ ";") :
-      "}" :
-      []
-  VarE v -> return (show v)
-  LitE (IntegerL i) -> return (show i ++ ".0")
+    let ((returnExpression, typ), letClauses) = runWriter $ inner body
+    return (toFunction "boo" a letClauses returnExpression typ, Expression)
+  VarE v -> return (show v, Expression)
+  LitE (IntegerL i) -> return (show i ++ ".0", Expression)
   InfixE (Just left) operator (Just right)
     | show operator == "VarE GHC.Num.*" -> do
-      l <- inner left
-      r <- inner right
-      return (l ++ " * " ++ r)
+      (l, Expression) <- inner left
+      (r, Expression) <- inner right
+      return (l ++ " * " ++ r, Expression)
+  InfixE (Just left) operator (Just right)
+    | show operator == "VarE GHC.Classes.==" -> do
+      (l, Expression) <- inner left
+      (r, Expression) <- inner right
+      return (l ++ " == " ++ r, Expression)
+  InfixE (Just left) operator (Just right)
+    | show operator == "VarE GHC.Real./" -> do
+      (l, Expression) <- inner left
+      (r, Expression) <- inner right
+      return (l ++ " / (" ++ r ++ ")", Expression)
   AppE f x -> do
-    g <- inner f
-    y <- inner x
-    return (g ++ "(" ++ y ++ ")")
+    (g, Expression) <- inner f
+    (y, Expression) <- inner x
+    return (g ++ "(" ++ y ++ ")", Expression)
   LetE [ValD (VarP l) (NormalB l_expr) []] expr -> do
-    l_e <- inner l_expr
+    (l_e, Expression) <- inner l_expr
     tell ["let " ++ show l ++ " = " ++ l_e ++ ";"]
     inner expr
+  CondE cond t e -> do
+    (condE, Expression) <- inner cond
+    let ((tE, tTyp), tLetClauses) = runWriter $ inner t
+    let ((eE, eTyp), eLetClauses) = runWriter $ inner e
+    return $ (, Statement) $ unlines $
+      ("if (" ++ condE ++ ") {") :
+      map ("  " ++) (renderBody tLetClauses tE tTyp) ++
+      "} else {" :
+      map ("  " ++) (renderBody eLetClauses eE eTyp) ++
+      "}" :
+      []
   x -> error $ ("inner: " ++ show x)
 
 simplify :: Exp -> Exp
