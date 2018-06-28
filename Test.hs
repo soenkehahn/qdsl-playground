@@ -12,14 +12,14 @@ import Lib
 
 main :: IO ()
 main = do
-  forM_ ([0 .. 10] ++ [-1, -2 .. -10]) $ \ i -> do
-    term <- unType <$> runQ (power i)
+  forM_ [0 .. 30] $ \ i -> do
+    term <- unType <$> runQ (factorial i)
     putStrLn ("i: " ++ show i)
     putStrLn "=== unsimplified: ====="
-    test $ to_js term
+    test $ toJs term
     putStrLn "======================="
     putStrLn "=== simplified: ======="
-    test $ to_js $ simplify term
+    test $ toJs $ simplify term
     putStrLn "======================="
 
 test :: String -> IO ()
@@ -28,17 +28,19 @@ test code = do
   writeFile "foo.js" (code ++ "\nconsole.log(f(3.1))\n")
   unit $ cmd "node foo.js"
 
-to_js :: Exp -> String
-to_js (LamE [VarP a] body) =
-  let ((returnExpression, typ), letClauses) = runWriter $ inner body
-  in toFunction (Just "f") a letClauses returnExpression typ
+toJs :: Exp -> String
+toJs exp = case exp of
+  (LamE [pattern] body) | show pattern == "ConP GHC.Tuple.() []" ->
+    let ((returnExpression, typ), letClauses) = runWriter $ inner body
+    in toFunction (Just "f") letClauses returnExpression typ
+  _ -> error ("toJs: " ++ show exp)
 
 indent :: [String] -> [String]
 indent = map ("  " ++) . concat . map lines
 
-toFunction :: Maybe String -> Name -> [String] -> String -> ExprType -> String
-toFunction name parameter letClauses returnExpression typ = unlines $
-  ("function " ++ fromMaybe "" name ++ "(" ++ show parameter ++ ") {") :
+toFunction :: Maybe String -> [String] -> String -> ExprType -> String
+toFunction name letClauses returnExpression typ = unlines $
+  ("function " ++ fromMaybe "" name ++ "() {") :
   indent (renderBody letClauses returnExpression typ) ++
   "}" :
   []
@@ -57,11 +59,11 @@ data ExprType = Statement | Expression
 
 inner :: Exp -> Writer [String] (String, ExprType)
 inner x = case x of
-  LamE [VarP a] body -> do
+  LamE [ConP unit []] body | show unit == "GHC.Tuple.()" -> do
     let ((returnExpression, typ), letClauses) = runWriter $ inner body
-    return (toFunction Nothing a letClauses returnExpression typ, Expression)
+    return (toFunction Nothing letClauses returnExpression typ, Expression)
   VarE v -> return (show v, Expression)
-  LitE (IntegerL i) -> return (show i ++ ".0", Expression)
+  LitE (IntegerL i) -> return (show i, Expression)
   InfixE (Just left) operator (Just right)
     | show operator == "VarE GHC.Num.*" -> do
       (l, Expression) <- inner left
@@ -77,12 +79,15 @@ inner x = case x of
       (l, Expression) <- inner left
       (r, Expression) <- inner right
       return (l ++ " / (" ++ r ++ ")", Expression)
+  AppE f (ConE unit) | show unit == "GHC.Tuple.()" -> do
+    (g, Expression) <- inner f
+    return (g ++ "()", Expression)
   AppE f x -> do
     (g, Expression) <- inner f
     (y, Expression) <- inner x
     return (g ++ "(" ++ y ++ ")", Expression)
-  LetE [ValD (VarP l) (NormalB l_expr) []] expr -> do
-    (l_e, Expression) <- inner l_expr
+  LetE [ValD (VarP l) (NormalB lExpr) []] expr -> do
+    (l_e, Expression) <- inner lExpr
     tell ["let " ++ show l ++ " = " ++ l_e ++ ";"]
     inner expr
   CondE cond t e -> do
@@ -100,7 +105,12 @@ inner x = case x of
 
 simplify :: Exp -> Exp
 simplify = rewrite $ \ ast -> case ast of
+  -- beta reduction
   AppE (LamE [VarP p] body) x -> Just $ replace p x body
+  AppE (LamE [ConP unit []] body) (ConE unit2)
+    | show unit == "GHC.Tuple.()" &&
+      show unit2 == "GHC.Tuple.()"
+      -> Just body
   _ -> Nothing
 
 replace :: Name -> Exp -> Exp -> Exp
