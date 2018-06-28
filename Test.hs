@@ -12,8 +12,8 @@ import Lib
 
 main :: IO ()
 main = do
-  forM_ [0 .. 30] $ \ i -> do
-    term <- unType <$> runQ (factorial i)
+  forM_ [0 .. 10] $ \ i -> do
+    term <- unType <$> runQ (fibonacci i)
     putStrLn ("i: " ++ show i)
     putStrLn "=== unsimplified: ====="
     test $ toJs term
@@ -31,7 +31,7 @@ test code = do
 toJs :: Exp -> String
 toJs exp = case exp of
   (LamE [pattern] body) | show pattern == "ConP GHC.Tuple.() []" ->
-    let ((returnExpression, typ), letClauses) = runWriter $ inner body
+    let ((returnExpression, typ), letClauses) = runWriter $ toJsH body
     in toFunction (Just "f") letClauses returnExpression typ
   _ -> error ("toJs: " ++ show exp)
 
@@ -57,43 +57,48 @@ renderBody letClauses returnExpression typ =
 
 data ExprType = Statement | Expression
 
-inner :: Exp -> Writer [String] (String, ExprType)
-inner x = case x of
+toJsH :: Exp -> Writer [String] (String, ExprType)
+toJsH x = case x of
   LamE [ConP unit []] body | show unit == "GHC.Tuple.()" -> do
-    let ((returnExpression, typ), letClauses) = runWriter $ inner body
+    let ((returnExpression, typ), letClauses) = runWriter $ toJsH body
     return (toFunction Nothing letClauses returnExpression typ, Expression)
   VarE v -> return (show v, Expression)
   LitE (IntegerL i) -> return (show i, Expression)
   InfixE (Just left) operator (Just right)
     | show operator == "VarE GHC.Num.*" -> do
-      (l, Expression) <- inner left
-      (r, Expression) <- inner right
+      (l, Expression) <- toJsH left
+      (r, Expression) <- toJsH right
       return (l ++ " * " ++ r, Expression)
   InfixE (Just left) operator (Just right)
     | show operator == "VarE GHC.Classes.==" -> do
-      (l, Expression) <- inner left
-      (r, Expression) <- inner right
+      (l, Expression) <- toJsH left
+      (r, Expression) <- toJsH right
       return (l ++ " == " ++ r, Expression)
   InfixE (Just left) operator (Just right)
     | show operator == "VarE GHC.Real./" -> do
-      (l, Expression) <- inner left
-      (r, Expression) <- inner right
+      (l, Expression) <- toJsH left
+      (r, Expression) <- toJsH right
       return (l ++ " / (" ++ r ++ ")", Expression)
+  InfixE (Just left) operator (Just right)
+    | show operator == "VarE GHC.Num.+" -> do
+      (l, Expression) <- toJsH left
+      (r, Expression) <- toJsH right
+      return (l ++ " + " ++ r, Expression)
   AppE f (ConE unit) | show unit == "GHC.Tuple.()" -> do
-    (g, Expression) <- inner f
+    (g, Expression) <- toJsH f
     return (g ++ "()", Expression)
   AppE f x -> do
-    (g, Expression) <- inner f
-    (y, Expression) <- inner x
+    (g, Expression) <- toJsH f
+    (y, Expression) <- toJsH x
     return (g ++ "(" ++ y ++ ")", Expression)
   LetE [ValD (VarP l) (NormalB lExpr) []] expr -> do
-    (l_e, Expression) <- inner lExpr
+    (l_e, Expression) <- toJsH lExpr
     tell ["let " ++ show l ++ " = " ++ l_e ++ ";"]
-    inner expr
+    toJsH expr
   CondE cond t e -> do
-    (condE, Expression) <- inner cond
-    let ((tE, tTyp), tLetClauses) = runWriter $ inner t
-    let ((eE, eTyp), eLetClauses) = runWriter $ inner e
+    (condE, Expression) <- toJsH cond
+    let ((tE, tTyp), tLetClauses) = runWriter $ toJsH t
+    let ((eE, eTyp), eLetClauses) = runWriter $ toJsH e
     return $ (, Statement) $ unlines $
       ("if (" ++ condE ++ ") {") :
       indent (renderBody tLetClauses tE tTyp) ++
@@ -101,7 +106,7 @@ inner x = case x of
       indent (renderBody eLetClauses eE eTyp) ++
       "}" :
       []
-  x -> error $ ("inner: " ++ show x)
+  x -> error $ ("toJsH: " ++ show x)
 
 simplify :: Exp -> Exp
 simplify = rewrite $ \ ast -> case ast of
@@ -111,6 +116,12 @@ simplify = rewrite $ \ ast -> case ast of
     | show unit == "GHC.Tuple.()" &&
       show unit2 == "GHC.Tuple.()"
       -> Just body
+  -- addition of integers
+  InfixE (Just (LitE (IntegerL a))) (VarE op) (Just (LitE (IntegerL b)))
+    | show op == "GHC.Num.+"
+    -> Just $ LitE $ IntegerL $ a + b
+    -- -> error $ show a
+
   _ -> Nothing
 
 replace :: Name -> Exp -> Exp -> Exp
